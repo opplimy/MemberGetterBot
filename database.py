@@ -79,6 +79,16 @@ def init_db():
         status TEXT NOT NULL DEFAULT 'pending',
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS mission_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        rewarded INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(order_id, user_id)
+    );
     """)
 
     defaults = {

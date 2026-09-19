@@ -746,27 +746,31 @@ async def daily_reward(update, context):
 def get_active_channels():
     conn = connect()
 
-    rows = conn.execute(
-        """
+    rows = conn.execute("""
         SELECT
-            id,
-            channel_id,
-            username,
-            title,
-            description,
-            reward
-        FROM channels
-        WHERE active = 1
-        ORDER BY id ASC
-        """
-    ).fetchall()
+            o.id AS order_id,
+            o.user_id AS order_owner_id,
+            o.members AS target_members,
+            o.status AS order_status,
+            c.id AS channel_db_id,
+            c.channel_id AS telegram_channel_id,
+            c.username,
+            c.title,
+            c.description,
+            c.reward
+        FROM orders o
+        JOIN channels c
+            ON CAST(o.channel_id AS INTEGER) = c.id
+        WHERE o.status IN ('pending', 'active')
+          AND c.active = 1
+        ORDER BY o.id ASC
+    """).fetchall()
 
     conn.close()
-
     return rows
 
 
-def mission_keyboard(channel_db_id, username):
+def mission_keyboard(order_id, username):
     buttons = []
 
     if username:
@@ -782,63 +786,77 @@ def mission_keyboard(channel_db_id, username):
     buttons.append([
         InlineKeyboardButton(
             "✅ بررسی عضویت",
-            callback_data=f"mission_check:{channel_db_id}",
+            callback_data=f"mission_check:{order_id}",
         )
     ])
 
     return InlineKeyboardMarkup(buttons)
 
 
-def mission_text(channel):
-    title = channel["title"] or "بدون نام"
-    username = (
-        channel["username"]
-        or channel["channel_id"]
+def mission_text(mission):
+    conn = connect()
+
+    row = conn.execute("""
+        SELECT COUNT(*) AS completed
+        FROM mission_tasks
+        WHERE order_id = ?
+          AND rewarded = 1
+    """, (mission["order_id"],)).fetchone()
+
+    conn.close()
+
+    completed = int(row["completed"] or 0)
+    target = int(mission["target_members"])
+
+    title = html.escape(
+        mission["title"] or mission["username"] or "کانال"
     )
+
     description = (
-        channel["description"]
-        or "بدون توضیحات"
+        html.escape(mission["description"])
+        if mission["description"]
+        else "با عضویت در این کانال، مأموریت را تکمیل کن."
     )
 
     return (
-        "🛒 <b>ماموریت عضویت</b>\n\n"
-        f"‼️ <b>نام کانال:</b> {html.escape(str(title))}\n\n"
-        f"📝 <b>توضیحات:</b>\n"
-        f"{html.escape(str(description))}\n\n"
-        f"🆔 <b>آیدی:</b> {html.escape(str(username))}\n\n"
-        f"💎 <b>پاداش:</b> {channel['reward']} الماس"
+        "🎯 <b>مأموریت عضویت</b>\n\n"
+        f"📢 <b>کانال:</b> {title}\n"
+        f"📝 {description}\n\n"
+        f"👥 پیشرفت: <b>{completed}/{target}</b>\n"
+        f"💎 پاداش: <b>{mission['reward']}</b> الماس\n\n"
+        "ابتدا عضو کانال شو و سپس روی «بررسی عضویت» بزن."
     )
 
 
 async def show_missions(update, context):
-    if not await require_required_membership(
-        update,
-        context,
-    ):
+    user = update.effective_user
+
+    if not await require_required_membership(update, context):
         return
 
-    channels = get_active_channels()
+    missions = get_active_channels()
 
-    if not channels:
+    if not missions:
         await update.message.reply_text(
-            "📭 فعلاً مأموریت فعالی وجود ندارد.",
+            "📭 در حال حاضر مأموریت فعالی وجود ندارد.",
             reply_markup=main_keyboard(),
         )
         return
 
     await update.message.reply_text(
-        "💎 <b>ماموریت‌های موجود</b>\n\n"
-        "عضو کانال شو و بعد «بررسی عضویت» را بزن.",
+        "🎯 <b>مأموریت‌های فعال</b>\n\n"
+        "با انجام مأموریت‌ها الماس دریافت کن.",
         parse_mode="HTML",
+        reply_markup=main_keyboard(),
     )
 
-    for channel in channels:
+    for mission in missions:
         await update.message.reply_text(
-            mission_text(channel),
+            mission_text(mission),
             parse_mode="HTML",
             reply_markup=mission_keyboard(
-                channel["id"],
-                channel["username"],
+                mission["order_id"],
+                mission["username"],
             ),
         )
 
@@ -848,175 +866,299 @@ async def mission_check_callback(update, context):
     await query.answer()
 
     user = query.from_user
-    ensure_user(user)
 
     try:
-        channel_db_id = int(
+        order_id = int(
             query.data.split(":", 1)[1]
         )
-    except Exception:
-        await query.message.reply_text(
-            "❌ مأموریت نامعتبر است."
+    except (ValueError, IndexError):
+        await query.answer(
+            "❌ مأموریت نامعتبر است.",
+            show_alert=True,
         )
         return
 
     conn = connect()
 
-    channel = conn.execute(
-        """
-        SELECT *
-        FROM channels
-        WHERE id = ?
-        """,
-        (channel_db_id,),
-    ).fetchone()
+    mission = conn.execute("""
+        SELECT
+            o.id AS order_id,
+            o.user_id AS order_owner_id,
+            o.members AS target_members,
+            o.status AS order_status,
+            c.id AS channel_db_id,
+            c.channel_id AS telegram_channel_id,
+            c.username,
+            c.title,
+            c.description,
+            c.reward,
+            c.active AS channel_active
+        FROM orders o
+        JOIN channels c
+            ON CAST(o.channel_id AS INTEGER) = c.id
+        WHERE o.id = ?
+    """, (order_id,)).fetchone()
 
-    if not channel:
+    if not mission:
         conn.close()
 
-        await query.message.reply_text(
-            "❌ مأموریت وجود ندارد."
+        await query.answer(
+            "❌ این مأموریت پیدا نشد.",
+            show_alert=True,
         )
         return
 
-    if not channel["active"]:
+    if mission["order_status"] == "completed":
         conn.close()
 
-        await query.message.reply_text(
-            "❌ این مأموریت غیرفعال شده است."
+        await query.answer(
+            "✅ این مأموریت قبلاً تکمیل شده است.",
+            show_alert=True,
         )
         return
 
-    existing = conn.execute(
-        """
+    if not mission["channel_active"]:
+        conn.close()
+
+        await query.answer(
+            "❌ این مأموریت دیگر فعال نیست.",
+            show_alert=True,
+        )
+        return
+
+    already = conn.execute("""
         SELECT rewarded
-        FROM channel_tasks
-        WHERE channel_id = ?
-        AND user_id = ?
-        """,
-        (
-            channel_db_id,
-            user.id,
-        ),
-    ).fetchone()
+        FROM mission_tasks
+        WHERE order_id = ?
+          AND user_id = ?
+    """, (
+        order_id,
+        user.id,
+    )).fetchone()
 
-    if existing and existing["rewarded"]:
+    if already and int(already["rewarded"]) == 1:
         conn.close()
 
-        await query.message.reply_text(
-            "ℹ️ پاداش این مأموریت را قبلاً گرفتی."
+        await query.answer(
+            "⚠️ این مأموریت را قبلاً انجام داده‌ای.",
+            show_alert=True,
         )
         return
 
     conn.close()
 
-    joined = await is_member(
-        context,
-        user.id,
-        channel["channel_id"],
-    )
+    try:
+        member = await context.bot.get_chat_member(
+            mission["telegram_channel_id"],
+            user.id,
+        )
 
-    if not joined:
-        await query.message.reply_text(
-            "❌ عضویت تأیید نشد.\n\n"
-            "ابتدا عضو کانال شو و دوباره بررسی کن.",
-            reply_markup=mission_keyboard(
-                channel["id"],
-                channel["username"],
-            ),
+        is_joined = member.status in (
+            "member",
+            "administrator",
+            "creator",
+        )
+
+    except Exception as e:
+        print("[MISSION CHECK ERROR]", e)
+        is_joined = False
+
+    if not is_joined:
+        await query.answer(
+            "❌ هنوز عضو کانال نشده‌ای.",
+            show_alert=True,
         )
         return
-
-    reward = int(channel["reward"])
 
     conn = connect()
 
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO channel_tasks
-        (channel_id, user_id, rewarded)
-        VALUES (?, ?, 0)
-        """,
-        (
-            channel_db_id,
+    try:
+        existing = conn.execute("""
+            SELECT rewarded
+            FROM mission_tasks
+            WHERE order_id = ?
+              AND user_id = ?
+        """, (
+            order_id,
             user.id,
-        ),
-    )
+        )).fetchone()
 
-    row = conn.execute(
-        """
-        SELECT rewarded
-        FROM channel_tasks
-        WHERE channel_id = ?
-        AND user_id = ?
-        """,
-        (
-            channel_db_id,
+        if existing and int(existing["rewarded"]) == 1:
+            conn.close()
+
+            await query.answer(
+                "⚠️ این مأموریت را قبلاً انجام داده‌ای.",
+                show_alert=True,
+            )
+            return
+
+        conn.execute("""
+            INSERT OR IGNORE INTO mission_tasks
+            (
+                order_id,
+                channel_id,
+                user_id,
+                rewarded
+            )
+            VALUES (?, ?, ?, 1)
+        """, (
+            order_id,
+            mission["channel_db_id"],
             user.id,
-        ),
-    ).fetchone()
+        ))
 
-    if row and row["rewarded"]:
-        conn.close()
+        inserted = conn.execute("""
+            SELECT rewarded
+            FROM mission_tasks
+            WHERE order_id = ?
+              AND user_id = ?
+        """, (
+            order_id,
+            user.id,
+        )).fetchone()
 
-        await query.message.reply_text(
-            "ℹ️ این پاداش قبلاً ثبت شده است."
-        )
-        return
+        if not inserted or int(inserted["rewarded"]) != 1:
+            conn.rollback()
+            conn.close()
 
-    conn.execute(
-        """
-        UPDATE users
-        SET diamonds = diamonds + ?
-        WHERE user_id = ?
-        """,
-        (
+            await query.answer(
+                "❌ ثبت مأموریت انجام نشد.",
+                show_alert=True,
+            )
+            return
+
+        reward = int(mission["reward"])
+
+        conn.execute("""
+            UPDATE users
+            SET diamonds = diamonds + ?
+            WHERE user_id = ?
+        """, (
             reward,
             user.id,
-        ),
-    )
+        ))
 
-    conn.execute(
-        """
-        UPDATE channel_tasks
-        SET rewarded = 1
-        WHERE channel_id = ?
-        AND user_id = ?
-        """,
-        (
-            channel_db_id,
-            user.id,
-        ),
-    )
-
-    conn.execute(
-        """
-        INSERT INTO transactions
-        (user_id, amount, type, description)
-        VALUES (?, ?, ?, ?)
-        """,
-        (
+        conn.execute("""
+            INSERT INTO transactions
+            (
+                user_id,
+                amount,
+                type,
+                description
+            )
+            VALUES (?, ?, ?, ?)
+        """, (
             user.id,
             reward,
             "channel_join",
-            f"پاداش عضویت در {channel['channel_id']}",
-        ),
-    )
+            f"مأموریت سفارش #{order_id}",
+        ))
 
-    conn.commit()
+        progress = conn.execute("""
+            SELECT COUNT(*) AS completed
+            FROM mission_tasks
+            WHERE order_id = ?
+              AND rewarded = 1
+        """, (order_id,)).fetchone()
+
+        completed = int(progress["completed"] or 0)
+        target = int(mission["target_members"])
+
+        mission_completed = completed >= target
+
+        if mission_completed:
+            conn.execute("""
+                UPDATE orders
+                SET status = 'completed'
+                WHERE id = ?
+            """, (order_id,))
+
+            other_active = conn.execute("""
+                SELECT COUNT(*) AS count
+                FROM orders
+                WHERE CAST(channel_id AS INTEGER) = ?
+                  AND id != ?
+                  AND status IN ('pending', 'active')
+            """, (
+                mission["channel_db_id"],
+                order_id,
+            )).fetchone()
+
+            if int(other_active["count"] or 0) == 0:
+                conn.execute("""
+                    UPDATE channels
+                    SET active = 0
+                    WHERE id = ?
+                """, (mission["channel_db_id"],))
+
+        else:
+            conn.execute("""
+                UPDATE orders
+                SET status = 'active'
+                WHERE id = ?
+                  AND status = 'pending'
+            """, (order_id,))
+
+        conn.commit()
+
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+
+        print("[MISSION REWARD ERROR]", e)
+
+        await query.answer(
+            "❌ خطایی هنگام ثبت مأموریت رخ داد.",
+            show_alert=True,
+        )
+        return
+
     conn.close()
 
-    await query.message.reply_text(
-        f"🎉 <b>عضویت تأیید شد!</b>\n\n"
-        f"💎 +{reward} الماس",
-        parse_mode="HTML",
-        reply_markup=main_keyboard(),
-    )
+    if mission_completed:
+        try:
+            await query.edit_message_reply_markup(
+                reply_markup=None
+            )
+        except Exception:
+            pass
 
+        await query.answer(
+            f"🎉 مأموریت کامل شد! {completed}/{target}",
+            show_alert=True,
+        )
 
-# =========================================================
-# ACCOUNT
-# =========================================================
+        try:
+            await context.bot.send_message(
+                chat_id=mission["order_owner_id"],
+                text=(
+                    "🎉 <b>سفارش شما تکمیل شد!</b>\n\n"
+                    f"🆔 سفارش: <code>#{order_id}</code>\n"
+                    f"👥 تعداد تکمیل‌شده: <b>{completed}/{target}</b>\n"
+                    "✅ وضعیت: تکمیل شده"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            print("[ORDER OWNER NOTIFY ERROR]", e)
+
+    else:
+        await query.answer(
+            f"✅ مأموریت ثبت شد!\n📊 {completed}/{target}",
+            show_alert=True,
+        )
+
+        try:
+            await query.edit_message_text(
+                mission_text(mission),
+                parse_mode="HTML",
+                reply_markup=mission_keyboard(
+                    order_id,
+                    mission["username"],
+                ),
+            )
+        except Exception:
+            pass
 
 async def account(update, context):
     if not await require_required_membership(
