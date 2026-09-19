@@ -940,15 +940,13 @@ def mission_text(mission):
     target = int(mission["target_members"] or 0)
     reward = int(mission["reward"] or 0)
 
-    username = mission["username"] or ""
-    username = username.lstrip("@")
+    username = (mission["username"] or "").lstrip("@")
+    title = mission["title"] or "کانال هدف"
 
     if username:
-        channel_link = f"https://t.me/{username}"
-        channel_display = f"@{username}"
+        channel_line = f'<a href="https://t.me/{username}">{html.escape(title)}</a>'
     else:
-        channel_link = ""
-        channel_display = mission["title"] or "کانال هدف"
+        channel_line = html.escape(title)
 
     slots = 5
 
@@ -961,27 +959,12 @@ def mission_text(mission):
 
     progress_bar = "🟩" * filled + "⬜" * (slots - filled)
 
-    if channel_link:
-        channel_line = (
-            f'<a href="{channel_link}">{html.escape(channel_display)}</a>'
-        )
-    else:
-        channel_line = html.escape(channel_display)
-
     return (
-        "🎯 <b>مأموریت عضویت جدید</b>\n\n"
-        "━━━━━━━━━━━━━━\n\n"
-        f"📢 <b>کانال هدف</b>\n"
-        f"{channel_line}\n\n"
-        f"👥 <b>ظرفیت مأموریت:</b> {target} نفر\n"
-        f"💎 <b>پاداش هر نفر:</b> {reward} الماس\n\n"
-        "━━━━━━━━━━━━━━\n\n"
-        "📊 <b>وضعیت پیشرفت</b>\n\n"
-        f"{progress_bar}  <b>{current} / {target}</b>\n\n"
-        "━━━━━━━━━━━━━━\n\n"
-        "💎 <b>سریع‌تر الماس جمع کنید!</b>\n"
-        "با انجام مأموریت‌ها الماس بیشتری به دست آورید "
-        "و برای <b>درخواست عضو</b> استفاده کنید. 🚀"
+        "🎯 <b>مأموریت عضویت</b>\n\n"
+        f"📢 <b>کانال:</b> {channel_line}\n"
+        f"👥 <b>تعداد:</b> {target} نفر\n"
+        f"💎 <b>پاداش:</b> {reward} الماس\n\n"
+        f"📊 <b>پیشرفت:</b> {progress_bar} {current}/{target}"
     )
 
 
