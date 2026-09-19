@@ -1891,6 +1891,7 @@ async def admin_add_channel_prompt(update, context):
     await update.message.reply_text(
         "➕ اطلاعات کانال را به این شکل بفرست:\n\n"
         "<code>@username | نام کانال | توضیحات | پاداش</code>\n\n"
+        f"💎 پاداش پیش‌فرض: <b>{get_setting('channel_join_reward', '2')}</b> الماس\n\n"
         "مثال:\n"
         "<code>@test | Test Channel | توضیحات کانال | 2</code>",
         parse_mode="HTML",
