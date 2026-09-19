@@ -777,6 +777,153 @@ def get_active_channels():
     return rows
 
 
+async def account(update, context):
+    if not await require_required_membership(
+        update,
+        context,
+    ):
+        return
+
+    user = update.effective_user
+
+    conn = connect()
+
+    row = conn.execute(
+        """
+        SELECT diamonds, referrals, is_banned
+        FROM users
+        WHERE user_id = ?
+        """,
+        (user.id,),
+    ).fetchone()
+
+    conn.close()
+
+    diamonds = row["diamonds"] if row else 0
+    referrals = row["referrals"] if row else 0
+
+    await update.message.reply_text(
+        "🔐 <b>حساب کاربری</b>\n\n"
+        f"🆔 آیدی: <code>{user.id}</code>\n"
+        f"👤 نام: {html.escape(user.first_name or '-')}\n"
+        f"💎 موجودی: <b>{diamonds}</b>\n"
+        f"👥 زیرمجموعه موفق: <b>{referrals}</b>",
+        parse_mode="HTML",
+        reply_markup=main_keyboard(),
+    )
+
+
+# =========================================================
+# REFERRAL MENU
+# =========================================================
+
+async def referral_menu(update, context):
+    if not await require_required_membership(
+        update,
+        context,
+    ):
+        return
+
+    user = update.effective_user
+
+    me = await context.bot.get_me()
+
+    link = (
+        f"https://t.me/{me.username}"
+        f"?start={user.id}"
+    )
+
+    conn = connect()
+
+    row = conn.execute(
+        """
+        SELECT referrals
+        FROM users
+        WHERE user_id = ?
+        """,
+        (user.id,),
+    ).fetchone()
+
+    conn.close()
+
+    count = row["referrals"] if row else 0
+    reward = int(
+        get_setting(
+            "referral_reward",
+            "3",
+        )
+    )
+
+    await update.message.reply_text(
+        "👥 <b>زیرمجموعه‌گیری</b>\n\n"
+        f"👤 تعداد دعوت موفق: <b>{count}</b>\n"
+        f"💎 پاداش هر دعوت: <b>{reward}</b>\n\n"
+        "🔗 لینک اختصاصی شما:\n"
+        f"<code>{link}</code>\n\n"
+        "لینک را برای دوستانت ارسال کن.",
+        parse_mode="HTML",
+        reply_markup=main_keyboard(),
+    )
+
+
+# =========================================================
+# HELP
+# =========================================================
+
+async def help_menu(update, context):
+    if not await require_required_membership(
+        update,
+        context,
+    ):
+        return
+
+    await update.message.reply_text(
+        "📚 <b>راهنمای کامل</b>\n\n"
+        "💎 <b>دریافت الماس</b>\n"
+        "هر روز پاداش روزانه بگیر و مأموریت‌های عضویت را انجام بده.\n\n"
+        "🚀 <b>سفارش ممبر</b>\n"
+        "کانال خودت را ثبت کن، یکی از پلن‌ها را انتخاب کن و سفارش بده.\n\n"
+        "👥 <b>زیرمجموعه</b>\n"
+        "لینک دعوت اختصاصی خودت را برای دوستانت بفرست.\n\n"
+        "👑 <b>ادمین کردن بات</b>\n"
+        "1️⃣ وارد کانال یا گروه خودت شو.\n"
+        "2️⃣ بخش مدیریت / Administrators را باز کن.\n"
+        "3️⃣ بات را Add کن.\n"
+        "4️⃣ دسترسی‌های لازم را فعال کن.\n"
+        "5️⃣ دوباره به بات برگرد و عملیات را ادامه بده.\n\n"
+        "⚠️ برای بررسی عضویت و مدیریت کانال، بات باید دسترسی لازم را داشته باشد.",
+        parse_mode="HTML",
+        reply_markup=main_keyboard(),
+    )
+
+
+# =========================================================
+# ORDERS
+# =========================================================
+
+def order_plan_keyboard():
+    rows = []
+
+    for members in ["5", "10", "15", "20", "60", "100"]:
+        price = int(
+            get_setting(
+                PRICE_KEYS[members],
+                PRICE_DEFAULTS[PRICE_KEYS[members]],
+            )
+        )
+
+        rows.append([
+            f"{members} نفر = {price} 💎"
+        ])
+
+    return ReplyKeyboardMarkup(
+        rows + [
+            ["🔙 بازگشت"],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
 def mission_text(mission):
     target = mission["username"] or mission["telegram_channel_id"]
     if isinstance(target, str) and not target.startswith("@"):
@@ -2270,33 +2417,24 @@ async def menu_handler(update, context):
 
     # USER MENU
     if text == "💎 دریافت الماس رایگان 💎":
-        await daily_reward(
-            update,
-            context,
-        )
+        await daily_reward(update, context)
+        return
 
-    elif text == "🚀 سفارش ممبر 🚀":
-        await order_menu(
-            update,
-            context,
-        )
+    if text == "🚀 سفارش ممبر 🚀":
+        await order_menu(update, context)
+        return
 
-    elif text == "🔐 حساب کاربری 🔐":
-        await account(
-            update,
-            context,
-        )
-    elif text == "👥 زیر مجموعه گیری 👥":
-        await referral_menu(
-            update,
-            context,
-        )
+    if text == "🔐 حساب کاربری 🔐":
+        await account(update, context)
+        return
 
-    elif text == "📚 راهنما ⁉️":
-        await help_menu(
-            update,
-            context,
-        )
+    if text == "👥 زیر مجموعه گیری 👥":
+        await referral_menu(update, context)
+        return
+
+    if text == "📚 راهنما ⁉️":
+        await help_menu(update, context)
+        return
 
 
 # =========================================================
