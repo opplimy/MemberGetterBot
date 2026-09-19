@@ -77,6 +77,7 @@ def init_db():
         members INTEGER NOT NULL,
         cost INTEGER NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending',
+        mission_message_id INTEGER,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -86,10 +87,49 @@ def init_db():
         channel_id INTEGER NOT NULL,
         user_id INTEGER NOT NULL,
         rewarded INTEGER NOT NULL DEFAULT 0,
+        joined_at TEXT,
+        retention_completed INTEGER NOT NULL DEFAULT 0,
+        penalty_applied INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(order_id, user_id)
     );
     """)
+
+
+    # Existing database migration
+    order_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(orders)").fetchall()
+    }
+
+    if "mission_message_id" not in order_columns:
+        conn.execute(
+            "ALTER TABLE orders ADD COLUMN mission_message_id INTEGER"
+        )
+
+    task_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(mission_tasks)").fetchall()
+    }
+
+    if "joined_at" not in task_columns:
+        conn.execute(
+            "ALTER TABLE mission_tasks ADD COLUMN joined_at TEXT"
+        )
+
+    if "retention_completed" not in task_columns:
+        conn.execute(
+            "ALTER TABLE mission_tasks "
+            "ADD COLUMN retention_completed INTEGER NOT NULL DEFAULT 0"
+        )
+
+    if "penalty_applied" not in task_columns:
+        conn.execute(
+            "ALTER TABLE mission_tasks "
+            "ADD COLUMN penalty_applied INTEGER NOT NULL DEFAULT 0"
+        )
+
+    conn.commit()
 
     defaults = {
         "start_bonus": "10",

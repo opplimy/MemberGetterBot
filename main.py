@@ -31,6 +31,9 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "8394607974"))
+MISSION_CHANNEL = "@membersbyte"
+RETENTION_SECONDS = 4 * 24 * 60 * 60
+MISSION_PENALTY = 3
 
 REQUIRED_CHANNELS = [
     "@ByteTunnel",
@@ -64,7 +67,7 @@ def main_keyboard():
     return ReplyKeyboardMarkup(
         [
             ["💎 دریافت الماس رایگان 💎"],
-            ["🚀 سفارش ممبر 🚀", "🎯 مأموریت‌ها"],
+            ["🚀 سفارش ممبر 🚀"],
             ["🔐 حساب کاربری 🔐", "👥 زیر مجموعه گیری 👥"],
             ["📚 راهنما ⁉️"],
         ],
@@ -744,6 +747,7 @@ async def daily_reward(update, context):
 # MISSIONS
 # =========================================================
 
+
 def get_active_channels():
     conn = connect()
 
@@ -753,12 +757,14 @@ def get_active_channels():
             o.user_id AS order_owner_id,
             o.members AS target_members,
             o.status AS order_status,
+            o.mission_message_id,
             c.id AS channel_db_id,
             c.channel_id AS telegram_channel_id,
             c.username,
             c.title,
             c.description,
-            c.reward
+            c.reward,
+            c.active AS channel_active
         FROM orders o
         JOIN channels c
             ON CAST(o.channel_id AS INTEGER) = c.id
@@ -769,29 +775,6 @@ def get_active_channels():
 
     conn.close()
     return rows
-
-
-def mission_keyboard(order_id, username):
-    buttons = []
-
-    if username:
-        clean = username.lstrip("@")
-
-        buttons.append([
-            InlineKeyboardButton(
-                "🌙 عضویت 💎",
-                url=f"https://t.me/{clean}",
-            )
-        ])
-
-    buttons.append([
-        InlineKeyboardButton(
-            "✅ بررسی عضویت",
-            callback_data=f"mission_check:{order_id}",
-        )
-    ])
-
-    return InlineKeyboardMarkup(buttons)
 
 
 def mission_text(mission):
@@ -809,57 +792,177 @@ def mission_text(mission):
     completed = int(row["completed"] or 0)
     target = int(mission["target_members"])
 
-    title = html.escape(
-        mission["title"] or mission["username"] or "کانال"
-    )
-
-    description = (
-        html.escape(mission["description"])
-        if mission["description"]
-        else "با عضویت در این کانال، مأموریت را تکمیل کن."
-    )
+    username = mission["username"] or mission["telegram_channel_id"]
 
     return (
-        "🎯 <b>مأموریت عضویت</b>\n\n"
-        f"📢 <b>کانال:</b> {title}\n"
-        f"📝 {description}\n\n"
-        f"👥 پیشرفت: <b>{completed}/{target}</b>\n"
-        f"💎 پاداش: <b>{mission['reward']}</b> الماس\n\n"
-        "ابتدا عضو کانال شو و سپس روی «بررسی عضویت» بزن."
+        "🎯 <b>مأموریت جدید</b>\n\n"
+        f"📢 کانال هدف: <b>{html.escape(str(username))}</b>\n"
+        f"👤 تعداد موردنیاز: <b>{target}</b>\n"
+        f"💎 پاداش هر نفر: <b>{int(mission['reward'])}</b>\n\n"
+        f"📊 پیشرفت: <b>{completed}/{target}</b>\n\n"
+        "ابتدا وارد کانال هدف شو، سپس روی «بررسی عضویت» بزن."
     )
 
 
-async def show_missions(update, context):
-    user = update.effective_user
+def mission_keyboard(order_id, username):
+    rows = []
 
-    if not await require_required_membership(update, context):
-        return
+    clean = (username or "").strip().lstrip("@")
 
-    missions = get_active_channels()
+    if clean:
+        rows.append([
+            InlineKeyboardButton(
+                "🚀 ورود به کانال",
+                url=f"https://t.me/{clean}",
+            )
+        ])
 
-    if not missions:
-        await update.message.reply_text(
-            "📭 در حال حاضر مأموریت فعالی وجود ندارد.",
-            reply_markup=main_keyboard(),
+    rows.append([
+        InlineKeyboardButton(
+            "✅ بررسی عضویت",
+            callback_data=f"mission_check:{order_id}",
         )
-        return
+    ])
 
-    await update.message.reply_text(
-        "🎯 <b>مأموریت‌های فعال</b>\n\n"
-        "با انجام مأموریت‌ها الماس دریافت کن.",
-        parse_mode="HTML",
-        reply_markup=main_keyboard(),
-    )
+    return InlineKeyboardMarkup(rows)
 
-    for mission in missions:
-        await update.message.reply_text(
-            mission_text(mission),
+
+async def publish_mission(bot, order_id):
+    conn = connect()
+
+    mission = conn.execute("""
+        SELECT
+            o.id AS order_id,
+            o.members AS target_members,
+            o.status AS order_status,
+            o.mission_message_id,
+            c.channel_id AS telegram_channel_id,
+            c.username,
+            c.title,
+            c.description,
+            c.reward
+        FROM orders o
+        JOIN channels c
+            ON CAST(o.channel_id AS INTEGER) = c.id
+        WHERE o.id = ?
+    """, (order_id,)).fetchone()
+
+    if not mission:
+        conn.close()
+        return None
+
+    if mission["mission_message_id"]:
+        message_id = int(mission["mission_message_id"])
+        conn.close()
+        return message_id
+
+    conn.close()
+
+    try:
+        message = await bot.send_message(
+            chat_id=MISSION_CHANNEL,
+            text=mission_text(mission),
             parse_mode="HTML",
             reply_markup=mission_keyboard(
-                mission["order_id"],
+                order_id,
                 mission["username"],
             ),
         )
+
+        conn = connect()
+
+        conn.execute("""
+            UPDATE orders
+            SET mission_message_id = ?,
+                status = 'active'
+            WHERE id = ?
+        """, (
+            message.message_id,
+            order_id,
+        ))
+
+        conn.commit()
+        conn.close()
+
+        print(
+            f"[MISSION PUBLISHED] "
+            f"order={order_id} "
+            f"message={message.message_id}"
+        )
+
+        return message.message_id
+
+    except Exception as e:
+        print("[MISSION PUBLISH ERROR]", e)
+        return None
+
+
+async def update_mission_message(bot, order_id):
+    conn = connect()
+
+    mission = conn.execute("""
+        SELECT
+            o.id AS order_id,
+            o.members AS target_members,
+            o.status AS order_status,
+            o.mission_message_id,
+            c.channel_id AS telegram_channel_id,
+            c.username,
+            c.title,
+            c.description,
+            c.reward
+        FROM orders o
+        JOIN channels c
+            ON CAST(o.channel_id AS INTEGER) = c.id
+        WHERE o.id = ?
+    """, (order_id,)).fetchone()
+
+    conn.close()
+
+    if not mission or not mission["mission_message_id"]:
+        return
+
+    try:
+        await bot.edit_message_text(
+            chat_id=MISSION_CHANNEL,
+            message_id=int(mission["mission_message_id"]),
+            text=mission_text(mission),
+            parse_mode="HTML",
+            reply_markup=mission_keyboard(
+                order_id,
+                mission["username"],
+            ),
+        )
+    except Exception as e:
+        print("[MISSION UPDATE ERROR]", e)
+
+
+async def delete_mission_message(bot, order_id):
+    conn = connect()
+
+    row = conn.execute("""
+        SELECT mission_message_id
+        FROM orders
+        WHERE id = ?
+    """, (order_id,)).fetchone()
+
+    conn.close()
+
+    if not row or not row["mission_message_id"]:
+        return
+
+    try:
+        await bot.delete_message(
+            chat_id=MISSION_CHANNEL,
+            message_id=int(row["mission_message_id"]),
+        )
+
+        print(
+            f"[MISSION DELETED] order={order_id}"
+        )
+
+    except Exception as e:
+        print("[MISSION DELETE ERROR]", e)
 
 
 async def mission_check_callback(update, context):
@@ -869,9 +972,7 @@ async def mission_check_callback(update, context):
     user = query.from_user
 
     try:
-        order_id = int(
-            query.data.split(":", 1)[1]
-        )
+        order_id = int(query.data.split(":", 1)[1])
     except (ValueError, IndexError):
         await query.answer(
             "❌ مأموریت نامعتبر است.",
@@ -902,7 +1003,6 @@ async def mission_check_callback(update, context):
 
     if not mission:
         conn.close()
-
         await query.answer(
             "❌ این مأموریت پیدا نشد.",
             show_alert=True,
@@ -911,7 +1011,6 @@ async def mission_check_callback(update, context):
 
     if mission["order_status"] == "completed":
         conn.close()
-
         await query.answer(
             "✅ این مأموریت قبلاً تکمیل شده است.",
             show_alert=True,
@@ -920,14 +1019,13 @@ async def mission_check_callback(update, context):
 
     if not mission["channel_active"]:
         conn.close()
-
         await query.answer(
             "❌ این مأموریت دیگر فعال نیست.",
             show_alert=True,
         )
         return
 
-    already = conn.execute("""
+    existing = conn.execute("""
         SELECT rewarded
         FROM mission_tasks
         WHERE order_id = ?
@@ -937,16 +1035,14 @@ async def mission_check_callback(update, context):
         user.id,
     )).fetchone()
 
-    if already and int(already["rewarded"]) == 1:
-        conn.close()
+    conn.close()
 
+    if existing and int(existing["rewarded"]) == 1:
         await query.answer(
             "⚠️ این مأموریت را قبلاً انجام داده‌ای.",
             show_alert=True,
         )
         return
-
-    conn.close()
 
     try:
         member = await context.bot.get_chat_member(
@@ -971,41 +1067,28 @@ async def mission_check_callback(update, context):
         )
         return
 
+    joined_at = datetime.now(timezone.utc).isoformat()
+
     conn = connect()
 
     try:
-        existing = conn.execute("""
-            SELECT rewarded
-            FROM mission_tasks
-            WHERE order_id = ?
-              AND user_id = ?
-        """, (
-            order_id,
-            user.id,
-        )).fetchone()
-
-        if existing and int(existing["rewarded"]) == 1:
-            conn.close()
-
-            await query.answer(
-                "⚠️ این مأموریت را قبلاً انجام داده‌ای.",
-                show_alert=True,
-            )
-            return
-
         conn.execute("""
             INSERT OR IGNORE INTO mission_tasks
             (
                 order_id,
                 channel_id,
                 user_id,
-                rewarded
+                rewarded,
+                joined_at,
+                retention_completed,
+                penalty_applied
             )
-            VALUES (?, ?, ?, 1)
+            VALUES (?, ?, ?, 1, ?, 0, 0)
         """, (
             order_id,
             mission["channel_db_id"],
             user.id,
+            joined_at,
         ))
 
         inserted = conn.execute("""
@@ -1041,12 +1124,7 @@ async def mission_check_callback(update, context):
 
         conn.execute("""
             INSERT INTO transactions
-            (
-                user_id,
-                amount,
-                type,
-                description
-            )
+            (user_id, amount, type, description)
             VALUES (?, ?, ?, ?)
         """, (
             user.id,
@@ -1074,24 +1152,6 @@ async def mission_check_callback(update, context):
                 WHERE id = ?
             """, (order_id,))
 
-            other_active = conn.execute("""
-                SELECT COUNT(*) AS count
-                FROM orders
-                WHERE CAST(channel_id AS INTEGER) = ?
-                  AND id != ?
-                  AND status IN ('pending', 'active')
-            """, (
-                mission["channel_db_id"],
-                order_id,
-            )).fetchone()
-
-            if int(other_active["count"] or 0) == 0:
-                conn.execute("""
-                    UPDATE channels
-                    SET active = 0
-                    WHERE id = ?
-                """, (mission["channel_db_id"],))
-
         else:
             conn.execute("""
                 UPDATE orders
@@ -1101,6 +1161,7 @@ async def mission_check_callback(update, context):
             """, (order_id,))
 
         conn.commit()
+        conn.close()
 
     except Exception as e:
         conn.rollback()
@@ -1114,15 +1175,12 @@ async def mission_check_callback(update, context):
         )
         return
 
-    conn.close()
-
     if mission_completed:
-        try:
-            await query.edit_message_reply_markup(
-                reply_markup=None
-            )
-        except Exception:
-            pass
+
+        await delete_mission_message(
+            context.bot,
+            order_id,
+        )
 
         await query.answer(
             f"🎉 مأموریت کامل شد! {completed}/{target}",
@@ -1144,22 +1202,183 @@ async def mission_check_callback(update, context):
             print("[ORDER OWNER NOTIFY ERROR]", e)
 
     else:
+
+        await update_mission_message(
+            context.bot,
+            order_id,
+        )
+
         await query.answer(
             f"✅ مأموریت ثبت شد!\n📊 {completed}/{target}",
             show_alert=True,
         )
 
+
+async def check_retention(bot):
+    conn = connect()
+
+    rows = conn.execute("""
+        SELECT
+            mt.id,
+            mt.order_id,
+            mt.user_id,
+            mt.joined_at,
+            mt.penalty_applied,
+            c.channel_id AS telegram_channel_id
+        FROM mission_tasks mt
+        JOIN channels c
+            ON c.id = mt.channel_id
+        WHERE mt.rewarded = 1
+          AND mt.joined_at IS NOT NULL
+          AND mt.penalty_applied = 0
+          AND mt.retention_completed = 0
+    """).fetchall()
+
+    now = datetime.now(timezone.utc)
+
+    for row in rows:
+
         try:
-            await query.edit_message_text(
-                mission_text(mission),
-                parse_mode="HTML",
-                reply_markup=mission_keyboard(
-                    order_id,
-                    mission["username"],
-                ),
+            joined = datetime.fromisoformat(
+                row["joined_at"]
             )
-        except Exception:
-            pass
+
+            if joined.tzinfo is None:
+                joined = joined.replace(
+                    tzinfo=timezone.utc
+                )
+
+            age = (
+                now - joined
+            ).total_seconds()
+
+            if age >= RETENTION_SECONDS:
+
+                conn.execute("""
+                    UPDATE mission_tasks
+                    SET retention_completed = 1
+                    WHERE id = ?
+                """, (
+                    row["id"],
+                ))
+
+                continue
+
+            try:
+                member = await bot.get_chat_member(
+                    row["telegram_channel_id"],
+                    row["user_id"],
+                )
+
+                still_joined = member.status in (
+                    "member",
+                    "administrator",
+                    "creator",
+                )
+
+            except Exception as e:
+                print(
+                    "[RETENTION CHECK ERROR]",
+                    row["user_id"],
+                    e,
+                )
+                continue
+
+            if still_joined:
+                continue
+
+            current = conn.execute("""
+                SELECT diamonds
+                FROM users
+                WHERE user_id = ?
+            """, (
+                row["user_id"],
+            )).fetchone()
+
+            balance = (
+                int(current["diamonds"])
+                if current else 0
+            )
+
+            penalty = min(
+                MISSION_PENALTY,
+                max(balance, 0),
+            )
+
+            new_balance = balance - penalty
+
+            conn.execute("""
+                UPDATE users
+                SET diamonds = ?
+                WHERE user_id = ?
+            """, (
+                new_balance,
+                row["user_id"],
+            ))
+
+            if penalty > 0:
+
+                conn.execute("""
+                    INSERT INTO transactions
+                    (
+                        user_id,
+                        amount,
+                        type,
+                        description
+                    )
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    row["user_id"],
+                    -penalty,
+                    "early_leave_penalty",
+                    f"جریمه خروج زودهنگام از مأموریت #{row['order_id']}",
+                ))
+
+            conn.execute("""
+                UPDATE mission_tasks
+                SET penalty_applied = 1,
+                    retention_completed = 1
+                WHERE id = ?
+            """, (
+                row["id"],
+            ))
+
+            try:
+                await bot.send_message(
+                    chat_id=row["user_id"],
+                    text=(
+                        "⚠️ <b>کسر الماس</b>\n\n"
+                        "قبل از کامل شدن ۴ روز از "
+                        "کانال مأموریت خارج شدی.\n"
+                        f"💎 کسرشده: <b>{penalty}</b>\n"
+                        f"💎 موجودی فعلی: <b>{new_balance}</b>"
+                    ),
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                print(
+                    "[PENALTY NOTIFY ERROR]",
+                    row["user_id"],
+                    e,
+                )
+
+        except Exception as e:
+            print(
+                "[RETENTION ERROR]",
+                row["id"],
+                e,
+            )
+
+    conn.commit()
+    conn.close()
+
+
+async def retention_job(context):
+    try:
+        await check_retention(context.bot)
+    except Exception as e:
+        print("[RETENTION JOB ERROR]", e)
+
 
 async def account(update, context):
     if not await require_required_membership(
@@ -1544,6 +1763,66 @@ async def handle_order_channel(update, context, text):
         conn.commit()
         conn.close()
 
+        # انتشار مأموریت در @membersbyte
+        mission_message_id = await publish_mission(
+            context.bot,
+            order_id,
+        )
+
+        # اگر انتشار مأموریت شکست خورد، سفارش لغو و هزینه برگردانده شود
+        if not mission_message_id:
+            refund_conn = connect()
+
+            refund_conn.execute(
+                """
+                UPDATE orders
+                SET status = 'cancelled'
+                WHERE id = ?
+                """,
+                (order_id,),
+            )
+
+            refund_conn.execute(
+                """
+                UPDATE users
+                SET diamonds = diamonds + ?
+                WHERE user_id = ?
+                """,
+                (
+                    cost,
+                    update.effective_user.id,
+                ),
+            )
+
+            refund_conn.execute(
+                """
+                INSERT INTO transactions
+                (user_id, amount, type, description)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    update.effective_user.id,
+                    cost,
+                    "order_refund",
+                    f"بازگشت هزینه سفارش لغوشده #{order_id}",
+                ),
+            )
+
+            refund_conn.commit()
+            refund_conn.close()
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                "❌ <b>انتشار مأموریت انجام نشد.</b>\n\n"
+                "هزینه سفارش به حساب شما برگشت داده شد.\n"
+                f"💎 مبلغ برگشتی: <b>{cost}</b>",
+                parse_mode="HTML",
+                reply_markup=main_keyboard(),
+            )
+
+            return True
+
         context.user_data.clear()
 
         await update.message.reply_text(
@@ -1552,9 +1831,8 @@ async def handle_order_channel(update, context, text):
             f"📢 کانال: {html.escape(title)}\n"
             f"👤 تعداد: {members}\n"
             f"💎 هزینه: {cost}\n"
-            "📌 وضعیت: در انتظار پردازش\n\n"
-            "⚠️ این سیستم سفارش را ثبت و مدیریت می‌کند؛ "
-            "بات به‌صورت خودکار اکانت‌ها را عضو کانال نمی‌کند.",
+            "📌 وضعیت: فعال\n\n"
+            "📢 مأموریت در کانال @membersbyte منتشر شد.",
             parse_mode="HTML",
             reply_markup=main_keyboard(),
         )
@@ -2417,13 +2695,6 @@ async def menu_handler(update, context):
             update,
             context,
         )
-
-    elif text == "🎯 مأموریت‌ها":
-        await show_missions(
-            update,
-            context,
-        )
-
     elif text == "👥 زیر مجموعه گیری 👥":
         await referral_menu(
             update,
@@ -2512,6 +2783,16 @@ def main():
             menu_handler,
         )
     )
+
+    if app.job_queue:
+        app.job_queue.run_repeating(
+            retention_job,
+            interval=1800,
+            first=60,
+        )
+        print("🛡️ Retention monitor: ON")
+    else:
+        print("⚠️ JobQueue unavailable")
 
     print("======================================")
     print("🤖 MemberGetterBot is running...")
