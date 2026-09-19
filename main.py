@@ -1792,6 +1792,10 @@ async def handle_order_channel(update, context, text):
             ),
         )
 
+        order_id = conn.execute(
+            "SELECT last_insert_rowid()"
+        ).fetchone()[0]
+
         conn.execute(
             """
             INSERT INTO transactions
@@ -1805,10 +1809,6 @@ async def handle_order_channel(update, context, text):
                 f"سفارش {members} ممبر برای {title}",
             ),
         )
-
-        order_id = conn.execute(
-            "SELECT last_insert_rowid()"
-        ).fetchone()[0]
 
         conn.commit()
         conn.close()
