@@ -1084,7 +1084,9 @@ async def publish_mission(bot, order_id):
         return message.message_id
 
     except Exception as e:
-        print("[MISSION PUBLISH ERROR]", e)
+        import traceback
+        print("[MISSION PUBLISH ERROR]", repr(e))
+        traceback.print_exc()
         return None
 
 async def update_mission_message(bot, order_id):
