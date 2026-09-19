@@ -859,8 +859,19 @@ async def publish_mission(bot, order_id):
     conn.close()
 
     try:
+        # بررسی مستقیم مقصد مأموریت
+        target_chat = await bot.get_chat(MISSION_CHANNEL)
+
+        print(
+            f"[MISSION TARGET] "
+            f"id={target_chat.id} "
+            f"type={target_chat.type} "
+            f"title={getattr(target_chat, "title", None)} "
+            f"username={getattr(target_chat, "username", None)}"
+        )
+
         message = await bot.send_message(
-            chat_id=MISSION_CHANNEL,
+            chat_id=target_chat.id,
             text=mission_text(mission),
             parse_mode="HTML",
             reply_markup=mission_keyboard(
