@@ -2320,6 +2320,12 @@ async def admin_command(update, context):
 # MAIN
 # =========================================================
 
+async def retention_job(context):
+    try:
+        await check_retention(context.bot)
+    except Exception as e:
+        print("[RETENTION JOB ERROR]", e)
+
 def main():
     if not BOT_TOKEN:
         raise RuntimeError(
