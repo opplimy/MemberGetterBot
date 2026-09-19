@@ -2597,6 +2597,165 @@ async def admin_command(update, context):
 # MAIN
 # =========================================================
 
+async def check_retention(bot):
+    conn = connect()
+
+    rows = conn.execute("""
+        SELECT
+            mt.id,
+            mt.order_id,
+            mt.user_id,
+            mt.joined_at,
+            mt.penalty_applied,
+            c.channel_id AS telegram_channel_id
+        FROM mission_tasks mt
+        JOIN channels c
+            ON c.id = mt.channel_id
+        WHERE mt.rewarded = 1
+          AND mt.joined_at IS NOT NULL
+          AND mt.penalty_applied = 0
+          AND mt.retention_completed = 0
+    """).fetchall()
+
+    now = datetime.now(timezone.utc)
+
+    for row in rows:
+
+        try:
+            joined = datetime.fromisoformat(
+                row["joined_at"]
+            )
+
+            if joined.tzinfo is None:
+                joined = joined.replace(
+                    tzinfo=timezone.utc
+                )
+
+            age = (
+                now - joined
+            ).total_seconds()
+
+            if age >= RETENTION_SECONDS:
+
+                conn.execute("""
+                    UPDATE mission_tasks
+                    SET retention_completed = 1
+                    WHERE id = ?
+                """, (
+                    row["id"],
+                ))
+
+                continue
+
+            try:
+                member = await bot.get_chat_member(
+                    row["telegram_channel_id"],
+                    row["user_id"],
+                )
+
+                still_joined = member.status in (
+                    "member",
+                    "administrator",
+                    "creator",
+                )
+
+            except Exception as e:
+                print(
+                    "[RETENTION CHECK ERROR]",
+                    row["user_id"],
+                    e,
+                )
+                continue
+
+            if still_joined:
+                continue
+
+            current = conn.execute("""
+                SELECT diamonds
+                FROM users
+                WHERE user_id = ?
+            """, (
+                row["user_id"],
+            )).fetchone()
+
+            balance = (
+                int(current["diamonds"])
+                if current else 0
+            )
+
+            penalty = min(
+                MISSION_PENALTY,
+                max(balance, 0),
+            )
+
+            new_balance = balance - penalty
+
+            conn.execute("""
+                UPDATE users
+                SET diamonds = ?
+                WHERE user_id = ?
+            """, (
+                new_balance,
+                row["user_id"],
+            ))
+
+            if penalty > 0:
+
+                conn.execute("""
+                    INSERT INTO transactions
+                    (
+                        user_id,
+                        amount,
+                        type,
+                        description
+                    )
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    row["user_id"],
+                    -penalty,
+                    "early_leave_penalty",
+                    f"جریمه خروج زودهنگام از مأموریت #{row['order_id']}",
+                ))
+
+            conn.execute("""
+                UPDATE mission_tasks
+                SET penalty_applied = 1,
+                    retention_completed = 1
+                WHERE id = ?
+            """, (
+                row["id"],
+            ))
+
+            try:
+                await bot.send_message(
+                    chat_id=row["user_id"],
+                    text=(
+                        "⚠️ <b>کسر الماس</b>\n\n"
+                        "قبل از کامل شدن ۴ روز از "
+                        "کانال مأموریت خارج شدی.\n"
+                        f"💎 کسرشده: <b>{penalty}</b>\n"
+                        f"💎 موجودی فعلی: <b>{new_balance}</b>"
+                    ),
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                print(
+                    "[PENALTY NOTIFY ERROR]",
+                    row["user_id"],
+                    e,
+                )
+
+        except Exception as e:
+            print(
+                "[RETENTION ERROR]",
+                row["id"],
+                e,
+            )
+
+    conn.commit()
+    conn.close()
+
+
 async def retention_job(context):
     try:
         await check_retention(context.bot)
