@@ -2647,7 +2647,7 @@ async def admin_menu_router(update, context, text):
 # =========================================================
 
 async def menu_handler(update, context):
-    text = update.message.text
+    text = update.message.text if update.message else ""
     user = update.effective_user
 
     ensure_user(user)
