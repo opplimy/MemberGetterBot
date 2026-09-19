@@ -870,6 +870,16 @@ async def publish_mission(bot, order_id):
             f"username={getattr(target_chat, "username", None)}"
         )
 
+        # بررسی دسترسی بات به مقصد مأموریت
+        me = await bot.get_me()
+        member = await bot.get_chat_member(target_chat.id, me.id)
+
+        print(
+            f"[MISSION BOT STATUS] "
+            f"user={me.username} "
+            f"status={member.status}"
+        )
+
         message = await bot.send_message(
             chat_id=target_chat.id,
             text=mission_text(mission),
