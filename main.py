@@ -925,44 +925,63 @@ def order_plan_keyboard():
     )
 
 def mission_text(mission):
-    target = mission["username"] or mission["telegram_channel_id"]
-    if isinstance(target, str) and not target.startswith("@"):
-        target_display = f"@{target}"
+    conn = connect()
+
+    row = conn.execute("""
+        SELECT COUNT(*) AS completed
+        FROM mission_tasks
+        WHERE order_id = ?
+          AND rewarded = 1
+    """, (mission["order_id"],)).fetchone()
+
+    conn.close()
+
+    current = int(row["completed"] or 0) if row else 0
+    target = int(mission["target_members"] or 0)
+    reward = int(mission["reward"] or 0)
+
+    username = mission["username"] or ""
+    username = username.lstrip("@")
+
+    if username:
+        channel_link = f"https://t.me/{username}"
+        channel_display = f"@{username}"
     else:
-        target_display = target
+        channel_link = ""
+        channel_display = mission["title"] or "کانال هدف"
 
-    target_url = (
-        f"https://t.me/{target_display.lstrip('@')}"
-        if isinstance(target_display, str)
-        else ""
-    )
+    slots = 5
 
-    current = int(mission.get("current_members", 0) or 0)
-    total = int(mission["target_members"] or 0)
-
-    current = min(current, total) if total > 0 else current
-
-    if total > 0:
-        filled = min(5, round((current / total) * 5))
+    if target > 0:
+        filled = min(slots, int((current / target) * slots))
+        if current >= target:
+            filled = slots
     else:
         filled = 0
 
-    progress = "🟩" * filled + "⬜" * (5 - filled)
+    progress_bar = "🟩" * filled + "⬜" * (slots - filled)
+
+    if channel_link:
+        channel_line = (
+            f'<a href="{channel_link}">{html.escape(channel_display)}</a>'
+        )
+    else:
+        channel_line = html.escape(channel_display)
 
     return (
         "🎯 <b>مأموریت عضویت جدید</b>\n\n"
         "━━━━━━━━━━━━━━\n\n"
-        "📢 <b>کانال هدف</b>\n"
-        f'<a href="{target_url}">{html.escape(target_display)}</a>\n\n'
-        f"👥 <b>ظرفیت مأموریت:</b> {total} نفر\n"
-        f"💎 <b>پاداش هر نفر:</b> {mission["reward"]} الماس\n\n"
+        f"📢 <b>کانال هدف</b>\n"
+        f"{channel_line}\n\n"
+        f"👥 <b>ظرفیت مأموریت:</b> {target} نفر\n"
+        f"💎 <b>پاداش هر نفر:</b> {reward} الماس\n\n"
         "━━━━━━━━━━━━━━\n\n"
         "📊 <b>وضعیت پیشرفت</b>\n\n"
-        f"{progress}  <b>{current} / {total}</b>\n\n"
+        f"{progress_bar}  <b>{current} / {target}</b>\n\n"
         "━━━━━━━━━━━━━━\n\n"
         "💎 <b>سریع‌تر الماس جمع کنید!</b>\n"
-        "با انجام مأموریت‌ها الماس بیشتری به دست آورید و "
-        "برای <b>درخواست عضو</b> استفاده کنید. 🚀"
+        "با انجام مأموریت‌ها الماس بیشتری به دست آورید "
+        "و برای <b>درخواست عضو</b> استفاده کنید. 🚀"
     )
 
 
