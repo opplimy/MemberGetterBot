@@ -64,8 +64,9 @@ def main_keyboard():
     return ReplyKeyboardMarkup(
         [
             ["💎 دریافت الماس رایگان 💎"],
-            ["🚀 سفارش ممبر 🚀", "🔐 حساب کاربری 🔐"],
-            ["👥 زیر مجموعه گیری 👥", "📚 راهنما ⁉️"],
+            ["🚀 سفارش ممبر 🚀", "🎯 مأموریت‌ها"],
+            ["🔐 حساب کاربری 🔐", "👥 زیر مجموعه گیری 👥"],
+            ["📚 راهنما ⁉️"],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -2413,6 +2414,12 @@ async def menu_handler(update, context):
 
     elif text == "🔐 حساب کاربری 🔐":
         await account(
+            update,
+            context,
+        )
+
+    elif text == "🎯 مأموریت‌ها":
+        await show_missions(
             update,
             context,
         )
