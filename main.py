@@ -1018,6 +1018,142 @@ def order_plan_keyboard():
     )
 
 
+async def publish_mission(bot, order_id):
+    conn = connect()
+
+    mission = conn.execute("""
+        SELECT
+            o.id AS order_id,
+            o.members AS target_members,
+            o.status AS order_status,
+            o.mission_message_id,
+            c.channel_id AS telegram_channel_id,
+            c.username,
+            c.title,
+            c.description,
+            c.reward
+        FROM orders o
+        JOIN channels c
+            ON CAST(o.channel_id AS INTEGER) = c.id
+        WHERE o.id = ?
+    """, (order_id,)).fetchone()
+
+    if not mission:
+        conn.close()
+        return None
+
+    if mission["mission_message_id"]:
+        message_id = int(mission["mission_message_id"])
+        conn.close()
+        return message_id
+
+    conn.close()
+
+    try:
+        message = await bot.send_message(
+            chat_id=MISSION_CHANNEL,
+            text=mission_text(mission),
+            parse_mode="HTML",
+            reply_markup=mission_keyboard(
+                order_id,
+                mission["username"],
+            ),
+        )
+
+        conn = connect()
+
+        conn.execute("""
+            UPDATE orders
+            SET mission_message_id = ?,
+                status = 'active'
+            WHERE id = ?
+        """, (
+            message.message_id,
+            order_id,
+        ))
+
+        conn.commit()
+        conn.close()
+
+        print(
+            f"[MISSION PUBLISHED] "
+            f"order={order_id} "
+            f"message={message.message_id}"
+        )
+
+        return message.message_id
+
+    except Exception as e:
+        print("[MISSION PUBLISH ERROR]", e)
+        return None
+
+async def update_mission_message(bot, order_id):
+    conn = connect()
+
+    mission = conn.execute("""
+        SELECT
+            o.id AS order_id,
+            o.members AS target_members,
+            o.status AS order_status,
+            o.mission_message_id,
+            c.channel_id AS telegram_channel_id,
+            c.username,
+            c.title,
+            c.description,
+            c.reward
+        FROM orders o
+        JOIN channels c
+            ON CAST(o.channel_id AS INTEGER) = c.id
+        WHERE o.id = ?
+    """, (order_id,)).fetchone()
+
+    conn.close()
+
+    if not mission or not mission["mission_message_id"]:
+        return
+
+    try:
+        await bot.edit_message_text(
+            chat_id=MISSION_CHANNEL,
+            message_id=int(mission["mission_message_id"]),
+            text=mission_text(mission),
+            parse_mode="HTML",
+            reply_markup=mission_keyboard(
+                order_id,
+                mission["username"],
+            ),
+        )
+    except Exception as e:
+        print("[MISSION UPDATE ERROR]", e)
+
+async def delete_mission_message(bot, order_id):
+    conn = connect()
+
+    row = conn.execute("""
+        SELECT mission_message_id
+        FROM orders
+        WHERE id = ?
+    """, (order_id,)).fetchone()
+
+    conn.close()
+
+    if not row or not row["mission_message_id"]:
+        return
+
+    try:
+        await bot.delete_message(
+            chat_id=MISSION_CHANNEL,
+            message_id=int(row["mission_message_id"]),
+        )
+
+        print(
+            f"[MISSION DELETED] order={order_id}"
+        )
+
+    except Exception as e:
+        print("[MISSION DELETE ERROR]", e)
+
+
 async def mission_check_callback(update, context):
     query = update.callback_query
     await query.answer()
