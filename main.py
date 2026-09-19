@@ -1578,11 +1578,12 @@ async def handle_order_channel(update, context, text):
         return True
 
     except Exception as e:
-        print("[ORDER ERROR]", e)
+        print("[ORDER ERROR]", repr(e))
 
         await update.message.reply_text(
-            "❌ کانال پیدا نشد یا دسترسی بات کافی نیست.\n\n"
-            "آیدی صحیح کانال را ارسال کن.",
+            "❌ خطا هنگام ثبت سفارش رخ داد.\n\n"
+            f"جزئیات خطا: <code>{html.escape(str(e))}</code>",
+            parse_mode="HTML",
             reply_markup=admin_cancel_keyboard(),
         )
 
