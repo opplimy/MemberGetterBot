@@ -848,6 +848,29 @@ async def publish_mission(bot, order_id):
     """, (order_id,)).fetchone()
 
     if not mission:
+        order_row = conn.execute(
+            "SELECT id, channel_id, status, members, cost FROM orders WHERE id = ?",
+            (order_id,),
+        ).fetchone()
+
+        print(
+            f"[MISSION PUBLISH ERROR] "
+            f"order={order_id} "
+            f"reason=SQL JOIN returned no row "
+            f"order_data={dict(order_row) if order_row else None}"
+        )
+
+        if order_row:
+            channel_row = conn.execute(
+                "SELECT id, channel_id, username, title FROM channels WHERE id = ?",
+                (order_row["channel_id"],),
+            ).fetchone()
+
+            print(
+                f"[MISSION CHANNEL DB] "
+                f"{dict(channel_row) if channel_row else None}"
+            )
+
         conn.close()
         return None
 
