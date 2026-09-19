@@ -914,7 +914,13 @@ async def publish_mission(bot, order_id):
         return message.message_id
 
     except Exception as e:
-        print("[MISSION PUBLISH ERROR]", e)
+        print(
+            f"[MISSION PUBLISH ERROR] "
+            f"order={order_id} "
+            f"target={MISSION_CHANNEL} "
+            f"type={type(e).__name__} "
+            f"error={e!r}"
+        )
         return None
 
 
