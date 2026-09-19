@@ -871,6 +871,254 @@ def order_plan_keyboard():
     )
 
 
+async def mission_check_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+
+    user = query.from_user
+
+    try:
+        order_id = int(query.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await query.answer(
+            "❌ مأموریت نامعتبر است.",
+            show_alert=True,
+        )
+        return
+
+    conn = connect()
+
+    mission = conn.execute("""
+        SELECT
+            o.id AS order_id,
+            o.user_id AS order_owner_id,
+            o.members AS target_members,
+            o.status AS order_status,
+            c.id AS channel_db_id,
+            c.channel_id AS telegram_channel_id,
+            c.username,
+            c.title,
+            c.description,
+            c.reward,
+            c.active AS channel_active
+        FROM orders o
+        JOIN channels c
+            ON CAST(o.channel_id AS INTEGER) = c.id
+        WHERE o.id = ?
+    """, (order_id,)).fetchone()
+
+    if not mission:
+        conn.close()
+        await query.answer(
+            "❌ این مأموریت پیدا نشد.",
+            show_alert=True,
+        )
+        return
+
+    if mission["order_status"] == "completed":
+        conn.close()
+        await query.answer(
+            "✅ این مأموریت قبلاً تکمیل شده است.",
+            show_alert=True,
+        )
+        return
+
+    if not mission["channel_active"]:
+        conn.close()
+        await query.answer(
+            "❌ این مأموریت دیگر فعال نیست.",
+            show_alert=True,
+        )
+        return
+
+    existing = conn.execute("""
+        SELECT rewarded
+        FROM mission_tasks
+        WHERE order_id = ?
+          AND user_id = ?
+    """, (
+        order_id,
+        user.id,
+    )).fetchone()
+
+    conn.close()
+
+    if existing and int(existing["rewarded"]) == 1:
+        await query.answer(
+            "⚠️ این مأموریت را قبلاً انجام داده‌ای.",
+            show_alert=True,
+        )
+        return
+
+    try:
+        member = await context.bot.get_chat_member(
+            mission["telegram_channel_id"],
+            user.id,
+        )
+
+        is_joined = member.status in (
+            "member",
+            "administrator",
+            "creator",
+        )
+
+    except Exception as e:
+        print("[MISSION CHECK ERROR]", e)
+        is_joined = False
+
+    if not is_joined:
+        await query.answer(
+            "❌ هنوز عضو کانال نشده‌ای.",
+            show_alert=True,
+        )
+        return
+
+    joined_at = datetime.now(timezone.utc).isoformat()
+
+    conn = connect()
+
+    try:
+        conn.execute("""
+            INSERT OR IGNORE INTO mission_tasks
+            (
+                order_id,
+                channel_id,
+                user_id,
+                rewarded,
+                joined_at,
+                retention_completed,
+                penalty_applied
+            )
+            VALUES (?, ?, ?, 1, ?, 0, 0)
+        """, (
+            order_id,
+            mission["channel_db_id"],
+            user.id,
+            joined_at,
+        ))
+
+        inserted = conn.execute("""
+            SELECT rewarded
+            FROM mission_tasks
+            WHERE order_id = ?
+              AND user_id = ?
+        """, (
+            order_id,
+            user.id,
+        )).fetchone()
+
+        if not inserted or int(inserted["rewarded"]) != 1:
+            conn.rollback()
+            conn.close()
+
+            await query.answer(
+                "❌ ثبت مأموریت انجام نشد.",
+                show_alert=True,
+            )
+            return
+
+        reward = int(mission["reward"])
+
+        conn.execute("""
+            UPDATE users
+            SET diamonds = diamonds + ?
+            WHERE user_id = ?
+        """, (
+            reward,
+            user.id,
+        ))
+
+        conn.execute("""
+            INSERT INTO transactions
+            (user_id, amount, type, description)
+            VALUES (?, ?, ?, ?)
+        """, (
+            user.id,
+            reward,
+            "channel_join",
+            f"مأموریت سفارش #{order_id}",
+        ))
+
+        progress = conn.execute("""
+            SELECT COUNT(*) AS completed
+            FROM mission_tasks
+            WHERE order_id = ?
+              AND rewarded = 1
+        """, (order_id,)).fetchone()
+
+        completed = int(progress["completed"] or 0)
+        target = int(mission["target_members"])
+
+        mission_completed = completed >= target
+
+        if mission_completed:
+            conn.execute("""
+                UPDATE orders
+                SET status = 'completed'
+                WHERE id = ?
+            """, (order_id,))
+
+        else:
+            conn.execute("""
+                UPDATE orders
+                SET status = 'active'
+                WHERE id = ?
+                  AND status = 'pending'
+            """, (order_id,))
+
+        conn.commit()
+        conn.close()
+
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+
+        print("[MISSION REWARD ERROR]", e)
+
+        await query.answer(
+            "❌ خطایی هنگام ثبت مأموریت رخ داد.",
+            show_alert=True,
+        )
+        return
+
+    if mission_completed:
+
+        await delete_mission_message(
+            context.bot,
+            order_id,
+        )
+
+        await query.answer(
+            f"🎉 مأموریت کامل شد! {completed}/{target}",
+            show_alert=True,
+        )
+
+        try:
+            await context.bot.send_message(
+                chat_id=mission["order_owner_id"],
+                text=(
+                    "🎉 <b>سفارش شما تکمیل شد!</b>\n\n"
+                    f"🆔 سفارش: <code>#{order_id}</code>\n"
+                    f"👥 تعداد تکمیل‌شده: <b>{completed}/{target}</b>\n"
+                    "✅ وضعیت: تکمیل شده"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            print("[ORDER OWNER NOTIFY ERROR]", e)
+
+    else:
+
+        await update_mission_message(
+            context.bot,
+            order_id,
+        )
+
+        await query.answer(
+            f"✅ مأموریت ثبت شد!\n📊 {completed}/{target}",
+            show_alert=True,
+        )
+
 async def order_menu(update, context):
     if not await require_required_membership(
         update,
